@@ -9,56 +9,91 @@ let hostId = null;
 let raceOn = false;
 let finishOrder = [];
 
-// HTTP server — Render inahitaji hii
 const server = http.createServer((req, res) => {
     res.writeHead(200, {
         "Content-Type": "text/plain; charset=utf-8"
     });
-    res.end("Mchezo server iko hai!");
+    res.end("SPEED DRIFT 3D SERVER ONLINE");
 });
 
-// WebSocket inaunganishwa kwenye HTTP server hiyo hiyo
 const wss = new WebSocketServer({ server });
 
 server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Seva ya Mchezo imewaka kwenye port ${PORT}`);
+    console.log("SPEED DRIFT server online on port " + PORT);
 });
 
-function broadcast(data) {
-    const message = JSON.stringify(data);
+function send(ws, data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+    }
+}
 
-    wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
+function broadcast(data) {
+    const msg = JSON.stringify(data);
+
+    wss.clients.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(msg);
         }
     });
 }
 
-wss.on("connection", (ws) => {
+function publicPlayers() {
+    const result = {};
+
+    Object.keys(players).forEach(id => {
+        const p = players[id];
+
+        result[id] = {
+            id: p.id,
+            name: p.name,
+            color: p.color,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            rotY: p.rotY,
+            p: p.p,
+            v: p.v
+        };
+    });
+
+    return result;
+}
+
+function broadcastState() {
+    broadcast({
+        type: "state",
+        players: publicPlayers(),
+        host: hostId
+    });
+}
+
+wss.on("connection", ws => {
 
     const playerId = Math.random()
         .toString(36)
         .substring(2, 10);
 
-    console.log(`Mchezaji ameunganishwa: ${playerId}`);
+    console.log("Player connected:", playerId);
 
-    ws.send(JSON.stringify({
+    send(ws, {
         type: "welcome",
         id: playerId
-    }));
+    });
 
-    ws.on("message", (message) => {
+    ws.on("message", raw => {
 
         try {
-            const data = JSON.parse(message);
 
-            // PLAYER ANAINGIA
+            const data = JSON.parse(raw);
+
+            // JOIN
             if (data.type === "join") {
 
                 if (Object.keys(players).length >= MAX_PLAYERS) {
-                    ws.send(JSON.stringify({
+                    send(ws, {
                         type: "full"
-                    }));
+                    });
                     return;
                 }
 
@@ -72,7 +107,9 @@ wss.on("connection", (ws) => {
                     z: 0,
                     rotY: 0,
                     p: 0,
-                    v: 0
+                    v: 0,
+
+                    ws: ws
                 };
 
                 if (!hostId) {
@@ -80,15 +117,10 @@ wss.on("connection", (ws) => {
                 }
 
                 console.log(
-                    `${players[playerId].name} amejiunga`
+                    players[playerId].name + " is ONLINE"
                 );
 
-                broadcast({
-                    type: "state",
-                    players: players,
-                    host: hostId
-                });
-
+                broadcastState();
                 return;
             }
 
@@ -109,7 +141,57 @@ wss.on("connection", (ws) => {
                 return;
             }
 
-            // HOST ANZA RACE
+            // SEND INVITE
+            if (data.type === "invite") {
+
+                const target = players[data.targetId];
+
+                if (!target) {
+
+                    send(ws, {
+                        type: "invite_error",
+                        message: "Mchezaji hayupo ONLINE"
+                    });
+
+                    return;
+                }
+
+                send(target.ws, {
+                    type: "invite",
+                    from: {
+                        id: me.id,
+                        name: me.name,
+                        color: me.color
+                    }
+                });
+
+                console.log(
+                    me.name + " invited " + target.name
+                );
+
+                return;
+            }
+
+            // INVITE RESPONSE
+            if (data.type === "invite_response") {
+
+                const sender = players[data.fromId];
+
+                if (!sender) return;
+
+                send(sender.ws, {
+                    type: "invite_response",
+                    accepted: !!data.accepted,
+                    from: {
+                        id: me.id,
+                        name: me.name
+                    }
+                });
+
+                return;
+            }
+
+            // START RACE
             if (data.type === "start") {
 
                 if (playerId !== hostId) {
@@ -119,12 +201,12 @@ wss.on("connection", (ws) => {
                 raceOn = true;
                 finishOrder = [];
 
-                Object.values(players).forEach((player) => {
+                Object.values(players).forEach(player => {
                     player.p = 0;
                     player.v = 0;
                 });
 
-                const roster = Object.values(players).map((player) => ({
+                const roster = Object.values(players).map(player => ({
                     id: player.id,
                     name: player.name,
                     color: player.color
@@ -135,12 +217,12 @@ wss.on("connection", (ws) => {
                     roster: roster
                 });
 
-                console.log("Race imeanza!");
+                console.log("RACE STARTED");
 
                 return;
             }
 
-            // PLAYER AMEMALIZA
+            // FINISH
             if (data.type === "finish") {
 
                 if (!raceOn) return;
@@ -157,59 +239,66 @@ wss.on("connection", (ws) => {
                 });
 
                 console.log(
-                    `${me.name} amemaliza nafasi ${finishOrder.length}`
+                    me.name +
+                    " finished position " +
+                    finishOrder.length
                 );
 
                 return;
             }
 
         } catch (error) {
-            console.error("Message error:", error);
+
+            console.log(
+                "Message error:",
+                error.message
+            );
         }
     });
 
     ws.on("close", () => {
 
-        const name = players[playerId]?.name || playerId;
+        const name =
+            players[playerId]?.name ||
+            playerId;
 
-        console.log(`${name} ameondoka`);
+        console.log(
+            name + " OFFLINE"
+        );
 
         delete players[playerId];
 
-        // Kama host ameondoka, mchezaji mwingine anakuwa host
         if (hostId === playerId) {
-            hostId = Object.keys(players)[0] || null;
+
+            hostId =
+                Object.keys(players)[0] ||
+                null;
         }
 
-        // Hakuna players
         if (Object.keys(players).length === 0) {
+
             raceOn = false;
             finishOrder = [];
             hostId = null;
         }
 
-        broadcast({
-            type: "state",
-            players: players,
-            host: hostId
-        });
+        broadcastState();
     });
 
-    ws.on("error", (error) => {
-        console.error("WebSocket error:", error.message);
+    ws.on("error", error => {
+
+        console.log(
+            "WebSocket error:",
+            error.message
+        );
     });
+
 });
 
-// Tuma game state kila 50ms
 setInterval(() => {
 
     if (Object.keys(players).length > 0) {
-
-        broadcast({
-            type: "state",
-            players: players,
-            host: hostId
-        });
+        broadcastState();
     }
 
-}, 50);
+}, 100);
